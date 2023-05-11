@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 
 from pyreduce.cwrappers import xi_zeta_tensors, create_spectral_model
 from tqdm import tqdm
+import sys
 
 import argparse
 
@@ -152,8 +153,13 @@ slit_width = header["ESO INS SLIT1 WID"]
 pixel_scale = 0.056
 
 # Oversampling rate
-assert header["ESO PRO REC2 PARAM4 NAME"] == "extract_oversample"
-oversample = int(header["ESO PRO REC2 PARAM4 VALUE"])
+# This might depend on the order the recipe are executed in, 
+# so we need to search for it in the header
+oversample_name = [n[0] for n in header["ESO PRO REC? PARAM? NAME"].cards if n[1] == "extract_oversample"][0]
+oversample_name = oversample_name[:-4] + "VALUE"
+oversample = int(header[oversample_name])
+# assert header["ESO PRO REC2 PARAM4 NAME"] == "extract_oversample"
+# oversample = int(header["ESO PRO REC2 PARAM4 VALUE"])
 
 # instrumental broadening (assumed Gaussian)
 # TODO: how large is this? Its around 10 for the tellurics in Molecfit
