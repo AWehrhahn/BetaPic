@@ -10,11 +10,22 @@ import astropy.units as u
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, EarthLocation
 
+import argparse
+import sys
 
-date = "2022-11-29"
-setting = "L3262"
-# nodding = "A"
 
+if len(sys.argv) > 1:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("date")
+    parser.add_argument("setting")
+    args = parser.parse_args(    )
+    date = args.date
+    setting = args.setting
+else:
+    date = "2022-11-29"
+    setting = "L3262"
+
+# Load the wavelength range to model
 fname_wave = f"/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/cr2res_obs_nodding_extracted_combined.fits"
 hdu_wave = fits.open(fname_wave)
 
@@ -37,7 +48,7 @@ sme.cscale_flag = "none"
 
 sme.wran = wave_range
 
-sme.linelist = ValdFile(join(dirname(__file__), "../data/beta_pic_L3262.lin"))
+sme.linelist = ValdFile(join(dirname(__file__), f"../data/beta_pic_{setting}.lin"))
 
 sme.teff = 8000
 sme.logg = 3.83

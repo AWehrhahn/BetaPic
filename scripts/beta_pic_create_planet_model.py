@@ -1,20 +1,24 @@
-from astropy.io import fits
+import argparse
+import sys
+from os.path import dirname, join
+
+import astropy.units as u
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from os.path import join, dirname
+from astropy.coordinates import EarthLocation, SkyCoord
+from astropy.io import fits
+from astropy.time import Time
+from pyreduce.cwrappers import create_spectral_model, xi_zeta_tensors
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d, maximum_filter1d
-import matplotlib.pyplot as plt
-
-from pyreduce.cwrappers import xi_zeta_tensors, create_spectral_model
 from tqdm import tqdm
-import sys
 
-import argparse
+from exoorbit.orbit import Orbit
+from exoorbit.bodies import Star, Planet
 
-def make_index(
-    ymin, ymax, xmin: int = 0, xmax: int = 2048, zero: int = 0
-):
+
+def make_index(ymin, ymax, xmin: int = 0, xmax: int = 2048, zero: int = 0):
     """Create an index (numpy style) that will select part of an image with changing position but fixed height
     The user is responsible for making sure the height is constant, otherwise it will still work, but the subsection will not have the desired format
     Parameters
@@ -48,10 +52,7 @@ def make_index(
         zero = xmin
 
     index_x = np.array(
-        [
-            np.arange(ymin[col], ymax[col] + 1)
-            for col in range(xmin - zero, xmax - zero)
-        ]
+        [np.arange(ymin[col], ymax[col] + 1) for col in range(xmin - zero, xmax - zero)]
     )
     index_y = np.array(
         [
@@ -63,6 +64,7 @@ def make_index(
 
     return index
 
+
 def load_ephimerides():
     # Load Ephimerides from file
     ephimerides_fname = join(dirname(__file__), "../data/ephimerides.txt")
@@ -71,8 +73,11 @@ def load_ephimerides():
         d[3:].replace("Nov", "11").replace("Dec", "12").replace("Feb", "02")
         for d in ephimerides["Date"]
     ]
-    ephimerides["Date"] = ["{2}-{1}-{0}".format(*d.split("-")) for d in ephimerides["Date"]]
+    ephimerides["Date"] = [
+        "{2}-{1}-{0}".format(*d.split("-")) for d in ephimerides["Date"]
+    ]
     return ephimerides
+
 
 def load_planet_spectrum():
     # Load Planet spectrum from file
@@ -90,12 +95,17 @@ def load_planet_spectrum():
     spectrum["Wavelength"] *= 1000
     return spectrum
 
+def load_planet_spectrum_model(model):
+    # Load planet spectrum from previous fit
+    hdu = fits.open(model)
+    return hdu
+
 def load_observation(date, setting, nodding):
     # Load observationsm from files
     fname_img = "/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/cr2res_util_calib_science_{nodding}_collapsed.fits"
-    fname_wave = "/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/cr2res_obs_nodding_extracted_combined.fits"
     fname_trace = "/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/cr2res_util_calib_flat_collapsed_tw.fits"
-    fname_slitfunc = "/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/cr2res_obs_nodding_slitfunc{nodding}.fits"
+    fname_wave = "/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/cr2res_obs_nodding_extracted_combined_initial.fits"
+    fname_slitfunc = "/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/cr2res_obs_nodding_slitfunc{nodding}_initial.fits"
 
     hdu_img = fits.open(fname_img.format(date=date, setting=setting, nodding=nodding))
     hdu_wave = fits.open(fname_wave.format(date=date, setting=setting))
@@ -105,40 +115,63 @@ def load_observation(date, setting, nodding):
     )
     return hdu_img, hdu_wave, hdu_trace, hdu_slitfunc
 
+
 def load_star_spectrum(date, setting):
     fname = join(dirname(__file__), f"../data/beta_pic_spec_{date}_{setting}.txt")
-    df =  pd.read_table(fname, sep="\s+", comment="#", header=None, names=["Wave", "Flux"])
+    df = pd.read_table(
+        fname, sep="\s+", comment="#", header=None, names=["Wave", "Flux"]
+    )
     units = ["nm", "erg/cm**2/s/Hz"]
     return df
+
 
 if len(sys.argv) > 1:
     parser = argparse.ArgumentParser()
     parser.add_argument("date")
     parser.add_argument("setting")
     parser.add_argument("nodding")
+    parser.add_argument("--model")
+    parser.add_argument("--out")
+    parser.add_argument("--out_model")
     args = parser.parse_args()
     date = args.date
     setting = args.setting
     nodding = args.nodding
+    model = args.model
+    outfile = args.out
+    outfile_model = args.out_model
 else:
     date = "2022-11-29"
     setting = "L3262"
     nodding = "A"
+    outfile = None
+    outfile_model = None
+    model = None
+
+star = Star("beta Pic")
+planet = star.planets["b"]
+orbit = Orbit(star, planet)
 
 # From https://www.aanda.org/articles/aa/pdf/2013/07/aa20838-12.pdf
 # star_magnitude = 3.454 # ± 0.003(a)
 # planet_magnitude =  11.15 #± 0.2
 # From https://iopscience.iop.org/article/10.1088/2041-8205/722/1/L49/pdf
-contrast_magnitude = 7.7 #+- 0.3
+contrast_magnitude = 7.7  # +- 0.3
 # Convert magnitude to flux ratio
 # contrast = m_p - m_s = -2.5 log10(F_p / F_s)
 # F_p / F_s = 10**(-2.5 * contrast)
 # Units: W/m**2
-flux_ratio = 10**(contrast_magnitude / (-2.5))
+flux_ratio = 10 ** (contrast_magnitude / (-2.5))
 
 ephimerides = load_ephimerides()
+
 spectrum = load_planet_spectrum()
-hdu_img, hdu_extract, hdu_trace, hdu_slitfunc = load_observation(date, setting, nodding)
+if model is not None:
+    hdu_model = load_planet_spectrum_model(model)
+
+hdu_img, hdu_extract, hdu_trace, hdu_slitfunc = load_observation(
+    date, setting, nodding
+)
 star_spectrum = load_star_spectrum(date, setting)
 
 # Load header information
@@ -153,9 +186,13 @@ slit_width = header["ESO INS SLIT1 WID"]
 pixel_scale = 0.056
 
 # Oversampling rate
-# This might depend on the order the recipe are executed in, 
+# This might depend on the order the recipe are executed in,
 # so we need to search for it in the header
-oversample_name = [n[0] for n in header["ESO PRO REC? PARAM? NAME"].cards if n[1] == "extract_oversample"][0]
+oversample_name = [
+    n[0]
+    for n in header["ESO PRO REC? PARAM? NAME"].cards
+    if n[1] == "extract_oversample"
+][0]
 oversample_name = oversample_name[:-4] + "VALUE"
 oversample = int(header[oversample_name])
 # assert header["ESO PRO REC2 PARAM4 NAME"] == "extract_oversample"
@@ -163,7 +200,7 @@ oversample = int(header[oversample_name])
 
 # instrumental broadening (assumed Gaussian)
 # TODO: how large is this? Its around 10 for the tellurics in Molecfit
-instrument_broadening = 10
+instrument_broadening = 3
 
 # As from the obs nodding recipe in the cr2res pipeline
 slit_length = 10
@@ -183,9 +220,24 @@ else:
 # planet seperation in mas
 eph = ephimerides[ephimerides["Date"] == date]["Sep"][0]
 
+# TODO: Check that the offsets are all in the right direction
+# Determine the radial velocity offset of the planet
+# 1: radial velocity of beta pic
+wave_offset = star.radial_velocity.to_value(u.km / u.s)
+# 2: barycentric correction
+paranal = EarthLocation.of_site("Paranal")
+barycorr = star.coordinates.radial_velocity_correction(
+    obstime=Time(date), location=paranal
+)
+wave_offset += barycorr.to_value(u.km / u.s)
+# 3: planet velocity
+wave_offset += orbit.radial_velocity_planet(Time(date)).to_value(u.km / u.s)
+
+
 primary = hdu_extract[0]
 hdus = [primary]
 
+hdus_planet_model = [primary]
 
 # iterate over the detectors
 for chip in tqdm([1, 2, 3], desc="Detector"):
@@ -195,10 +247,13 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
     extract_table = hdu_extract[ext].data
     trace_table = hdu_trace[ext].data
     slitfunc_table = hdu_slitfunc[ext].data
+    if model is not None:
+        model_table = hdu_model[ext].data
 
     # To store the model of the planet spectrum
     # as it would look like on the detector
     planet_img = np.zeros_like(img)
+    planet_table = {}
 
     # TODO iterate over the orders
     orders = sorted(list(set(trace_table["Order"])))
@@ -212,10 +267,12 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
         mask_star = np.isfinite(spec_star)
         mask_star[:20] = False
         mask_star[-20:] = False
-        spec_star[~mask_star] = np.interp(x[~mask_star], x[mask_star], spec_star[mask_star])
+        spec_star[~mask_star] = np.interp(
+            x[~mask_star], x[mask_star], spec_star[mask_star]
+        )
         smooth_star_spec = gaussian_filter1d(maximum_filter1d(spec_star, 100), 50)
         spec_star_model = np.interp(wave, star_spectrum["Wave"], star_spectrum["Flux"])
-        
+
         conversion_ratio = spec_star_model / smooth_star_spec
 
         slitfunc = slitfunc_table[f"{order:02}_01_SLIT_FUNC"]
@@ -241,7 +298,9 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
 
         # Shift the slit fraction to the ones used by the obs_nodding recipe
         # Thus the slit function matches the image coordinates
-        interp = interp1d([0, 0.5, 1], np.array([lower, middle, upper]).T, kind="linear")
+        interp = interp1d(
+            [0, 0.5, 1], np.array([lower, middle, upper]).T, kind="linear"
+        )
         lower = interp(slit_frac_bot)
         middle = interp(slit_frac_mid)
         upper = interp(slit_frac_top)
@@ -276,16 +335,24 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
         wave_planet = interp1d(x, wave, fill_value="extrapolate")(x + planet_offset_x)
 
         # Get the sample of the planet spectrum that we need
-        spec_planet = np.interp(wave_planet, spectrum["Wavelength"], spectrum["F_nu"])
-
+        # With Radial velocity offset
+        spec_planet = np.interp(wave_planet, spectrum["Wavelength"] + wave_offset, spectrum["F_nu"])
         # Adjust the scale to be the same as the observed star spectrum
         # Making sure that the flux contrast matches the observed one
         spec_planet /= conversion_ratio
         spec_ratio = np.sum(spec_planet) / np.sum(spec_star)
         spec_planet *= flux_ratio / spec_ratio
-
         # TODO How large is the instrumental broadening?
         spec_planet = gaussian_filter1d(spec_planet, instrument_broadening)
+        # Add telluric absorption lines
+        spec_planet_orig = np.copy(spec_planet)
+        spec_planet *= np.interp(wave_planet, wave, spec_star / smooth_star_spec)
+        
+        if model is not None:
+            # We still calculate the planet model first for the comparison in the plot
+            # TODO: load the planet model from the first iteration, instead of recalculating
+            # it again every iteration
+            spec_planet = model_table[f"{order:02}_01_SPEC"]
 
         # Use the same slitfunctiom for the planet as for the star
         # Just shifted by the expected amount based on the ephimeredes
@@ -310,15 +377,23 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
         # Use the efficient C method
         # this uses the xi tensor to construct a model of the planet spectrum
         # accounting for the curvature in the same way as the extraction does
-        planet_img_order = create_spectral_model(width, height, oversample, xi, spec_planet, slitfunc)
+        planet_img_order = create_spectral_model(
+            width, height, oversample, xi, spec_planet, slitfunc
+        )
         planet_img[img_idx] = planet_img_order
 
+        planet_table[f"{order:02}_01_WL"] = wave_planet
+        planet_table[f"{order:02}_01_SPEC"] = spec_planet
+        planet_table[f"{order:02}_01_ORIG"] = spec_planet_orig
 
         # Debug Plots
         plt.clf()
-        plt.plot(wave_planet, spec_planet)
+        plt.plot(wave, spec_star * flux_ratio, label="star")
+        plt.plot(wave_planet[20:-20], spec_planet[20:-20], label="planet")
+        plt.plot(wave_planet[20:-20], spec_planet_orig[20:-20], label="no tellurics")
         plt.xlabel("Wavelength [nm]")
         plt.ylabel("Flux [W/m^2/s]")
+        plt.legend()
         plt.savefig(f"beta_pic_spectrum_c{chip}_o{order}.png")
 
         plt.clf()
@@ -337,19 +412,31 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
             color="r",
             label="peak+offset",
         )
-        # plt.axhline(flux_ratio,
-        #             color="k")
         plt.xlabel("y [px]")
-        # plt.yscale("log")
         plt.savefig(f"beta_pic_slitfunc_c{chip}_o{order}.png")
 
     hdus += [fits.ImageHDU(data=planet_img, header=hdu_img[ext].header)]
+    columns = [fits.Column(name=k, format="D", array=v) for k, v in planet_table.items()]
+    hdus_planet_model += [fits.BinTableHDU.from_columns(columns, header=hdu_extract[ext].header)]
 
     plt.clf()
     plt.imshow(planet_img, aspect="auto", origin="lower", interpolation="none")
     plt.savefig(f"beta_pic_planet_model_c{chip}.png")
 
+if outfile is None:
+    outfile = (
+        f"/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/beta_pic_img_{nodding}.fits"
+    )
+
 hdus = fits.HDUList(hdus)
-hdus.writeto(f"beta_pic_img_{date}_{setting}.fits", overwrite=True)
+hdus.writeto(outfile, overwrite=True)
+
+if outfile_model is None:
+    outfile_model = (
+        f"/scratch/ptah/anwe5599/CRIRES/{date}_{setting}/extr/beta_pic_planet_model_{nodding}.fits"
+    )
+hdus_planet_model = fits.HDUList(hdus_planet_model)
+hdus_planet_model.writeto(outfile_model, overwrite=True)
+
 
 pass
