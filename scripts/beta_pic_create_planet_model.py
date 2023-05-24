@@ -162,6 +162,12 @@ contrast_magnitude = 7.7  # +- 0.3
 # F_p / F_s = 10**(-2.5 * contrast)
 # Units: W/m**2
 flux_ratio = 10 ** (contrast_magnitude / (-2.5))
+# TODO figure out the ratio between stellar model and planet model in the L' filter
+# VLT/NACO instrument
+# https://www.eso.org/sci/facilities/paranal/decommissioned/naco/inst/filters.html 
+# with at least 50% transmission
+# or use the transmission curve of the filter?
+L_bounds = 3.5, 4.1
 
 ephimerides = load_ephimerides()
 
@@ -239,8 +245,18 @@ hdus = [primary]
 
 hdus_planet_model = [primary]
 
+fig = plt.figure(figsize=(14,4))
+axs = None
+
+fig_slitfunc = plt.figure(figsize=(14,4))
+axs_slitfunc = None
+
+fig_model = plt.figure(figsize=(14,4))
+axs_model = fig_model.subplots(1, 3, gridspec_kw={"wspace":0, "hspace":0})
+
+
 # iterate over the detectors
-for chip in tqdm([1, 2, 3], desc="Detector"):
+for i, chip in tqdm(enumerate([1, 2, 3]), total=3, desc="Detector"):
     ext = f"CHIP{chip}.INT1"
 
     img = hdu_img[ext].data
@@ -255,9 +271,13 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
     planet_img = np.zeros_like(img)
     planet_table = {}
 
-    # TODO iterate over the orders
     orders = sorted(list(set(trace_table["Order"])))
-    for order in tqdm(orders, desc="Order", leave=False):
+
+    if axs is None:
+        axs = fig.subplots(len(orders), 3, sharey=True, gridspec_kw={"wspace":0, "hspace":0})
+        axs_slitfunc = fig_slitfunc.subplots(len(orders), 3, sharex=True, sharey=True, gridspec_kw={"wspace":0, "hspace":0})
+
+    for j, order in tqdm(enumerate(orders), total=len(orders), desc="Order", leave=False):
         x = np.arange(1, 2049)
 
         wave = extract_table[f"{order:02}_01_WL"]
@@ -346,7 +366,8 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
         spec_planet = gaussian_filter1d(spec_planet, instrument_broadening)
         # Add telluric absorption lines
         spec_planet_orig = np.copy(spec_planet)
-        spec_planet *= np.interp(wave_planet, wave, spec_star / smooth_star_spec)
+        spec_tell = np.interp(wave_planet, wave, spec_star / smooth_star_spec)
+        spec_planet *= spec_tell
         
         if model is not None:
             # We still calculate the planet model first for the comparison in the plot
@@ -385,43 +406,49 @@ for chip in tqdm([1, 2, 3], desc="Detector"):
         planet_table[f"{order:02}_01_WL"] = wave_planet
         planet_table[f"{order:02}_01_SPEC"] = spec_planet
         planet_table[f"{order:02}_01_ORIG"] = spec_planet_orig
+        planet_table[f"{order:02}_01_TELL"] = spec_tell
 
         # Debug Plots
-        plt.clf()
-        plt.plot(wave, spec_star * flux_ratio, label="star")
-        plt.plot(wave_planet[20:-20], spec_planet[20:-20], label="planet")
-        plt.plot(wave_planet[20:-20], spec_planet_orig[20:-20], label="no tellurics")
-        plt.xlabel("Wavelength [nm]")
-        plt.ylabel("Flux [W/m^2/s]")
-        plt.legend()
-        plt.savefig(f"beta_pic_spectrum_c{chip}_o{order}.png")
+        ax = axs[j, i]
+        ax.plot(wave, spec_star * flux_ratio, label="star")
+        ax.plot(wave_planet[20:-20], spec_planet[20:-20], label="planet")
+        ax.plot(wave_planet[20:-20], spec_planet_orig[20:-20], label="no tellurics")
+        if j == len(orders)-1:
+            ax.set_xlabel("Wavelength [nm]")
+        if i == 0 and j == len(orders) // 2:
+            ax.set_ylabel("Flux [W/m^2/s]")
 
-        plt.clf()
-        plt.plot(slitfunc_pixels, slitfunc)
-        plt.axvline(slitfunc_pixels[slitfunc.size // 2], color="k", label="mid")
-        plt.axvline(slitfunc_pixels[np.argmax(slitfunc)], color="r", label="peak")
-        plt.axvline(
+        ax = axs_slitfunc[j, i]
+        ax.plot(slitfunc_pixels, slitfunc)
+        ax.axvline(slitfunc_pixels[slitfunc.size // 2], color="k", label="mid")
+        ax.axvline(slitfunc_pixels[np.argmax(slitfunc)], color="r", label="peak")
+        ax.axvline(
             slitfunc_pixels[np.argmax(slitfunc)] - eph_pixel,
             linestyle="--",
             color="r",
             label="peak+offset",
         )
-        plt.axvline(
+        ax.axvline(
             slitfunc_pixels[np.argmax(slitfunc)] + eph_pixel,
             linestyle="--",
             color="r",
             label="peak+offset",
         )
-        plt.xlabel("y [px]")
-        plt.savefig(f"beta_pic_slitfunc_c{chip}_o{order}.png")
+        if j == len(orders)-1:
+            ax.set_xlabel("y [px]")
 
     hdus += [fits.ImageHDU(data=planet_img, header=hdu_img[ext].header)]
     columns = [fits.Column(name=k, format="D", array=v) for k, v in planet_table.items()]
     hdus_planet_model += [fits.BinTableHDU.from_columns(columns, header=hdu_extract[ext].header)]
 
-    plt.clf()
-    plt.imshow(planet_img, aspect="auto", origin="lower", interpolation="none")
-    plt.savefig(f"beta_pic_planet_model_c{chip}.png")
+    ax = axs_model[i]
+    ax.imshow(planet_img, aspect="auto", origin="lower", interpolation="none")
+
+# fig.legend()
+fig.savefig("beta_pic_spectrum.png", dpi=600)
+fig_slitfunc.savefig("beta_pic_slitfunc.png", dpi=600)
+fig_model.savefig("beta_pic_model.png", dpi=600)
+
 
 if outfile is None:
     outfile = (

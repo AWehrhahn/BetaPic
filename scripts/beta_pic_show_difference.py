@@ -5,7 +5,7 @@ import numpy as np
 
 def plot(initial, subtracted, out=None):
     if out is None:
-        out = initial[:-5] + ".png"
+        out = "beta_pic_difference_c{chip}_o{order}.png"
     initial = fits.open(initial)
     subtracted = fits.open(subtracted)
     for chip in [1, 2, 3]:
@@ -32,7 +32,8 @@ def plot(initial, subtracted, out=None):
             plt.xlabel("Wavelength [nm]")
             plt.ylabel("$\Delta$F")
             plt.legend()
-            plt.savefig(f"beta_pic_difference_c{chip}_o{order}.png", dpi=600)
+            outfile = out.format(chip=chip, order=order)
+            plt.savefig(outfile, dpi=600)
 
 
 if __name__ == "__main__":
