@@ -15,7 +15,17 @@ pysme-astro
 exoorbit
 
 # How to use this package
-The execution of this package is split into two parts. First it creates a shell script that will in turn call the other scripts in the correct order and with the right parameters.
+The execution of this package is split into two parts. First it creates a shell script that will in turn call the other scripts in the correct order and with the right parameters. Additionally we need to create some data files before we can start the analysis.
+
+## Creating the datafiles
+### Planet model
+Get the data file from Molliere, or run petitRADTRANS for beta Pic b.
+
+### Stellar model
+We use PySME to create a model of the stellar spectrum of beta Pic. For this analysis we will need a linelist for the L band, which can easily be created using VALD3 (http://vald.astro.uu.se/).
+
+### Ephimeredes
+We use the ephimeredes from Lacour et al. 2021 here to get the seperation in mas.
 
 ## Creating the shell script
 To execute this package first create a shell script using:
